@@ -1,4 +1,4 @@
-'use server';
+"use server";
 
 import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
@@ -7,7 +7,16 @@ import postgres from 'postgres';
 import { signIn } from '@/auth';
 import { AuthError } from 'next-auth';
 
-const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require', prepare: false });
+// Optional Postgres connection used only by the tutorial pages (customers/invoices).
+// In this project, the primary data comes from external Spring services.
+// If no POSTGRES_URL is configured, gracefully disable these actions.
+const POSTGRES_URL =
+  process.env.POSTGRES_URL ||
+  process.env.POSTGRES_URL_NON_POOLING ||
+  process.env.DATABASE_URL;
+const sql = POSTGRES_URL
+  ? postgres(POSTGRES_URL, { ssl: 'require', prepare: false })
+  : null;
 
 const FormSchema = z.object({
   id: z.string(),
@@ -37,6 +46,13 @@ export type State = {
 };
 
 export async function createInvoice(prevState: State, formData: FormData) {
+  if (!sql) {
+    // No Postgres configured: disable this tutorial feature with a clear message
+    return {
+      message:
+        'Invoices (tutorial) are disabled in this demo because POSTGRES_URL is not configured. Use Facturas en B (PostgreSQL) vía Swagger o integraremos una pantalla dedicada.',
+    } satisfies State;
+  }
   // Validate form fields using Zod
   const validatedFields = CreateInvoice.safeParse({
     customerId: formData.get('customerId'),
@@ -58,7 +74,7 @@ export async function createInvoice(prevState: State, formData: FormData) {
   const date = new Date().toISOString().split('T')[0];
 
   try {
-    await sql`
+    await sql!`
       INSERT INTO invoices (customer_id, amount, status, date)
       VALUES (${customerId}, ${amountInCents}, ${status}, ${date})
     `;
@@ -73,6 +89,12 @@ export async function createInvoice(prevState: State, formData: FormData) {
 }
 
 export async function updateInvoice(id: string, formData: FormData) {
+  if (!sql) {
+    return {
+      message:
+        'Invoices (tutorial) are disabled in this demo because POSTGRES_URL is not configured.',
+    } as unknown as never; // update flow is not reachable without DB
+  }
   const { customerId, amount, status } = UpdateInvoice.parse({
     customerId: formData.get('customerId'),
     amount: formData.get('amount'),
@@ -81,7 +103,7 @@ export async function updateInvoice(id: string, formData: FormData) {
   const amountInCents = Math.round(amount * 100);
 
   try {
-    await sql`
+    await sql!`
       UPDATE invoices
       SET customer_id = ${customerId}, amount = ${amountInCents}, status = ${status}
       WHERE id = ${id}
@@ -99,7 +121,8 @@ export async function deleteInvoice(id: string) {
   // throw new Error('Failed to Delete Invoice');
 
   try {
-    await sql`DELETE FROM invoices WHERE id = ${id}`;
+    if (!sql) return { message: 'Invoices feature disabled (no POSTGRES_URL).' };
+    await sql!`DELETE FROM invoices WHERE id = ${id}`;
   } catch (error) {
     return { message: 'Database Error: Failed to delete invoice.' };
   }
